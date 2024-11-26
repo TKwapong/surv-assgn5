@@ -8,11 +8,15 @@ editor: visual
 You may work in pairs or individually for this assignment. Make sure you join a group in Canvas if you are working in pairs. Turn in this assignment as an HTML or PDF file to ELMS. Make sure to include the R Markdown or Quarto file that was used to generate it. Include the GitHub link for the repository containing these files.
 
 ```{r}
+#| message: false
 library(tidyverse)
 library(magrittr)
 library(gtrendsR)
 library(censusapi)
 library(ggplot2)
+library(factoextra)
+library(ggmap)
+
 ```
 
 ## Exploring ACS Data
@@ -49,9 +53,10 @@ head(il_map)
 Join the ACS data with the map data. Not that `il_map` has a column `subregion` which includes county names. We need a corresponding variable in the ACS data to join both data sets. This needs some transformations, among which the function `tolower()` might be useful. Call the joined data `acs_map`.
 
 ```{r}
-acs_il_c %<>% mutate(county = tolower(gsub(" County, Illinois", "", NAME)))  # Remove " County" and lowercase
+# Remove " County" and lowercase
+acs_il_c %<>% mutate(county = tolower(gsub(" County, Illinois", "", NAME)))  
 head(acs_il_c)
-# Join ACS data with map data
+
 acs_map <- il_map %>%
            left_join(acs_il_c, by = c("subregion" = "county"))
 head(acs_map)
@@ -70,40 +75,215 @@ geom_polygon(aes(x = long, y = lat, group = group, fill = income))
 
 We want to find clusters of counties that are similar in their population, average household income and per capita income. First, clean the data so that you have the appropriate variables to use for clustering. Next, create the distance matrix of the cleaned data. This distance matrix can be used to cluster counties, e.g. using the ward method.
 
+```{r}
+hclust_data <- acs_map %>%
+  select(pop, hh_income, income) %>%
+  na.omit() %>%  
+  mutate_all(scale) 
+```
+
+```{r}
+hclust_dist <- dist(hclust_data)
+#hc_complete <- hclust(hclust_dist, method = "complete")
+#hc_average <- hclust(hclust_dist, method = "average")
+hc_ward <- hclust(hclust_dist, method = "ward.D2")
+
+```
+
 Plot the dendrogram to find a reasonable number of clusters. Draw boxes around the clusters of your cluster solution.
 
+```{r}
+plot(hc_ward, main = "Hierarchical Clustering (Ward's Method)", xlab = "", sub = "")
+rect.hclust(hc_ward, k = 4, border = "red")  
+```
+
 Visualize the county clusters on a map. For this task, create a new `acs_map` object that now also includes cluster membership as a new column. This column should be called `cluster`.
+
+```{r}
+cluster_assignments <- cutree(hc_ward, k = 5)
+
+acs_map_clust <- acs_map %>%
+  filter(complete.cases(pop, hh_income, income)) %>% 
+  mutate(cluster = factor(cluster_assignments))  # Add cluster assignments
+
+#mean of the variables used for clustering by cluster
+cluster_means <- acs_map_clust %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_pop = mean(pop, na.rm = TRUE),
+    mean_hh_income = mean(hh_income, na.rm = TRUE),
+    mean_income = mean(income, na.rm = TRUE)
+  )
+
+# View the results
+head(cluster_means)
+
+```
+
+```{r}
+ggplot(acs_map_clust) + 
+  geom_polygon(aes(x = long, y = lat, group = group, fill = cluster)) + 
+  labs(title = "County Clusters in Illinois") +
+  scale_fill_manual(values = c("red", "blue", "green", "yellow","orange"), 
+                    name = "Cluster", 
+                    breaks = c(1, 2, 3, 4, 5), 
+                    labels = c("Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4", "Cluster 5")) +
+  theme_minimal()
+
+```
 
 ## Census Tracts
 
 For the next section we need ACS data on a census tract level. We use the same variables as before.
 
 ```{r}
-# acs_il_t <- getCensus(name = "acs/acs5",
-#                     vintage = 2016, 
-#                     vars = c("NAME", "B01003_001E", "B19013_001E", "B19301_001E"),
-#                     region = "tract:*", 
-#                     regionin = "state:17",
-#                     key = cs_key) %<>%
-#             mutate_all(funs(ifelse(.==-666666666, NA, .))) %>%
-#             rename(pop = B01003_001E, 
-#                    hh_income = B19013_001E, 
-#                    income = B19301_001E)
-# head(acs_il_t)
+acs_il_t <- getCensus(name = "acs/acs5",
+                     vintage = 2016, 
+                     vars = c("NAME", "B01003_001E", "B19013_001E", "B19301_001E"),
+                     region = "tract:*", 
+                     regionin = "state:17",
+                     key = cs_key) %>%
+             mutate_all(funs(ifelse(.==-666666666, NA, .))) %>%
+             rename(pop = B01003_001E, 
+                    hh_income = B19013_001E, 
+                    income = B19301_001E)
+head(acs_il_t)
+```
+
+```{r}
+# Clean tract data
+acs_il_t <- acs_il_t %>%
+  mutate(
+    name = tolower(gsub("census tract [0-9.]+, | county|illinois", "", county)),
+    county = trimws(county),
+    county = gsub(",?$", "", county)
+  )
+
+head(acs_il_t)
 ```
 
 ## k-Means
 
 As before, clean our data for clustering census tracts based on population, average household income and per capita income.
 
+```{r}
+# Clean data for clustering census tracts
+kmeans_data <- acs_il_t %>%
+  select(pop, hh_income, income) %>%
+  na.omit() %>%
+  mutate_all(scale) 
+
+head(kmeans_data)
+```
+
 Since we want to use K Means in this section, we start by determining the optimal number of K that results in Clusters with low within but high between variation. Plot within cluster sums of squares for a range of K (e.g. up to 20).
+
+```{r}
+fviz_nbclust(kmeans_data, 
+             kmeans,
+             method = "wss",
+             k.max = 20) +
+  labs(title = "Elbow Plot for Optimal K",
+       x = "Number of Clusters (k)",
+       y = "Within-cluster Sum of Squares") +
+  theme_minimal()
+```
 
 Run `kmeans()` for the optimal number of clusters based on the plot above.
 
+```{r}
+set.seed(123)
+kmeans_result <- kmeans(kmeans_data, centers = 6, nstart = 25)
+
+kmeans_data$cluster  <- kmeans_result$cluster
+acs_il_t$cluster <- NA
+acs_il_t$cluster[complete.cases(acs_il_t[c("pop", "hh_income", "income")])] <- kmeans_result$cluster
+
+```
+
 Find the mean population, household income and per capita income grouped by clusters. In addition, display the most frequent county that can be observed within each cluster.
+
+```{r}
+# Calculate cluster summaries
+cluster_summary <- acs_il_t %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_pop = round(mean(pop, na.rm = TRUE), 2),
+    mean_hh_income = round(mean(hh_income, na.rm = TRUE), 2),
+    mean_income = round(mean(income, na.rm = TRUE), 2),
+    n = n()
+  ) %>%
+  filter(!is.na(cluster))
+
+# Find most frequent county 
+most_frequent_county <- acs_il_t %>%
+  filter(!is.na(cluster)) %>%
+  group_by(cluster, county) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(cluster) %>%
+  slice_max(order_by = count, n = 1) %>%
+  arrange(cluster)
+
+print("Cluster Summary Statistics:")
+print(as.data.frame(cluster_summary), row.names = FALSE)
+
+print("\nMost Frequent County per Cluster:")
+print(as.data.frame(most_frequent_county), row.names = FALSE)
+
+```
 
 As you might have seen earlier, it's not always clear which number of clusters is the optimal choice. To automate K Means clustering, program a function based on `kmeans()` that takes K as an argument. You can fix the other arguments, e.g. such that a specific dataset is always used when calling the function.
 
+```{r}
+
+means_cluster <- function(data, K) {
+  set.seed(123)
+  data_numeric <- data[sapply(data, is.numeric)]
+  data_numeric <- na.omit(data_numeric)
+  # Run K-means clustering for the given number of clusters (K)
+  kmeans_result <- kmeans(data_numeric, centers = K, nstart = 25)
+  
+  # Add the resulting cluster membership to the original dataset
+  # Ensure to match rows back to the original data
+  data$cluster_K <- kmeans_result$cluster[match(rownames(data_numeric), rownames(data))]
+  
+  # Return the modified dataset with clusters
+  return(data)
+}
+```
+
 We want to utilize this function to iterate over multiple Ks (e.g., K = 2, ..., 10) and -- each time -- add the resulting cluster membership as a new variable to our (cleaned) original data frame (`acs_il_t`). There are multiple solutions for this task, e.g. think about the `apply` family or `for` loops.
 
+```{r}
+#K values to iterate over
+K_values <- 2:10
+
+# Initialize the dataset 
+acs_il_t_numeric <- acs_il_t %>%
+  select(county,pop, hh_income, income) %>%  
+  na.omit() %>%  
+  mutate_at(vars(pop, hh_income, income), scale)  
+
+# We will iterate over K_values and apply means_cluster for each value of K, storing the results in a list
+clustered_data_list <- lapply(K_values, function(K) {
+  means_cluster(acs_il_t_numeric, K)  # Apply the function for each K
+})
+
+# Combine the results into a single dataset with each cluster column
+final_data <- clustered_data_list[[1]]  # Start with the first result
+
+# Combine the cluster columns for each value of K (2 to 10)
+for (i in 2:length(clustered_data_list)) {
+  final_data <- cbind(final_data, clustered_data_list[[i]]$cluster_K)
+}
+
+# Rename the columns to indicate the cluster for each K
+colnames(final_data)[(ncol(final_data) - length(K_values) + 1):ncol(final_data)] <- paste0("cluster_K", K_values)
+```
+
 Finally, display the first rows of the updated data set (with multiple cluster columns).
+
+```{r}
+head(final_data, 1)
+
+```
