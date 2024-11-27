@@ -7,6 +7,8 @@ editor: visual
 
 You may work in pairs or individually for this assignment. Make sure you join a group in Canvas if you are working in pairs. Turn in this assignment as an HTML or PDF file to ELMS. Make sure to include the R Markdown or Quarto file that was used to generate it. Include the GitHub link for the repository containing these files.
 
+Github assignment repo: <https://github.com/TKwapong/surv-assgn5>
+
 ```{r}
 #| message: false
 library(tidyverse)
@@ -53,7 +55,6 @@ head(il_map)
 Join the ACS data with the map data. Not that `il_map` has a column `subregion` which includes county names. We need a corresponding variable in the ACS data to join both data sets. This needs some transformations, among which the function `tolower()` might be useful. Call the joined data `acs_map`.
 
 ```{r}
-# Remove " County" and lowercase
 acs_il_c %<>% mutate(county = tolower(gsub(" County, Illinois", "", NAME)))  
 head(acs_il_c)
 
@@ -104,9 +105,8 @@ cluster_assignments <- cutree(hc_ward, k = 5)
 
 acs_map_clust <- acs_map %>%
   filter(complete.cases(pop, hh_income, income)) %>% 
-  mutate(cluster = factor(cluster_assignments))  # Add cluster assignments
+  mutate(cluster = factor(cluster_assignments))  
 
-#mean of the variables used for clustering by cluster
 cluster_means <- acs_map_clust %>%
   group_by(cluster) %>%
   summarise(
@@ -115,7 +115,6 @@ cluster_means <- acs_map_clust %>%
     mean_income = mean(income, na.rm = TRUE)
   )
 
-# View the results
 head(cluster_means)
 
 ```
@@ -127,7 +126,8 @@ ggplot(acs_map_clust) +
   scale_fill_manual(values = c("red", "blue", "green", "yellow","orange"), 
                     name = "Cluster", 
                     breaks = c(1, 2, 3, 4, 5), 
-                    labels = c("Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4", "Cluster 5")) +
+                    labels = c("Cluster 1", "Cluster 2", "Cluster 3", 
+                               "Cluster 4", "Cluster 5")) +
   theme_minimal()
 
 ```
@@ -154,10 +154,13 @@ head(acs_il_t)
 # Clean tract data
 acs_il_t <- acs_il_t %>%
   mutate(
-    name = tolower(gsub("census tract [0-9.]+, | county|illinois", "", county)),
-    county = trimws(county),
-    county = gsub(",?$", "", county)
-  )
+    county = str_remove(NAME, "Census Tract [0-9.]+, ") %>%
+             str_remove(", Illinois") %>%
+             str_remove(" County") %>%
+             str_trim() %>% 
+             tolower(),
+    )
+
 
 head(acs_il_t)
 ```
@@ -167,7 +170,6 @@ head(acs_il_t)
 As before, clean our data for clustering census tracts based on population, average household income and per capita income.
 
 ```{r}
-# Clean data for clustering census tracts
 kmeans_data <- acs_il_t %>%
   select(pop, hh_income, income) %>%
   na.omit() %>%
@@ -264,7 +266,8 @@ acs_il_t_numeric <- acs_il_t %>%
   na.omit() %>%  
   mutate_at(vars(pop, hh_income, income), scale)  
 
-# We will iterate over K_values and apply means_cluster for each value of K, storing the results in a list
+#Iiterate over K_values and apply means_cluster for each value of K, 
+#storing the results in a list
 clustered_data_list <- lapply(K_values, function(K) {
   means_cluster(acs_il_t_numeric, K)  # Apply the function for each K
 })
@@ -278,7 +281,8 @@ for (i in 2:length(clustered_data_list)) {
 }
 
 # Rename the columns to indicate the cluster for each K
-colnames(final_data)[(ncol(final_data) - length(K_values) + 1):ncol(final_data)] <- paste0("cluster_K", K_values)
+colnames(final_data)[(ncol(final_data) - length(K_values) + 1)
+                     :ncol(final_data)] <- paste0("cluster_K", K_values)
 ```
 
 Finally, display the first rows of the updated data set (with multiple cluster columns).
